@@ -230,9 +230,13 @@ export default {
       selectionUpdatePending: false,
       isResizing: false,
       resizeTimeout: null,
+      leadIndex: null,
     };
   },
   watch: {
+    '$route.path'() {
+      this.leadIndex = null;
+    },
     gallerySize() {
       this.columnWidth = 250 + state.user.gallerySize * 50;
     },
@@ -638,11 +642,33 @@ export default {
         props: { items },
       });
     },
+    getCurrentAnchor() {
+      if (state.lastSelectedIndex !== null && this.allItems.some(item => item.index === state.lastSelectedIndex)) {
+        return state.lastSelectedIndex;
+      }
+      if (state.selected.length > 0) {
+        const first = state.selected[0];
+        const idx = typeof first === "number" ? first : first?.index;
+        if (typeof idx === "number" && this.allItems.some(item => item.index === idx)) {
+          return idx;
+        }
+      }
+      return null;
+    },
+    getCurrentLead() {
+      if (this.leadIndex !== null && this.allItems.some(item => item.index === this.leadIndex)) {
+        return this.leadIndex;
+      }
+      return this.getCurrentAnchor();
+    },
     // Helper method to select the first item if nothing is selected
     selectFirstItem() {
       mutations.resetSelected();
       if (this.allItems.length > 0) {
-        mutations.addSelected(this.allItems[0].index);
+        const firstIdx = this.allItems[0].index;
+        mutations.addSelected(firstIdx);
+        mutations.setLastSelectedIndex(firstIdx);
+        this.leadIndex = firstIdx;
       }
     },
     // Helper method to find the closest item in the given direction (up or down) from the current one.
@@ -650,6 +676,7 @@ export default {
       const listItems = Array.from(this.$el.querySelectorAll('.listing-item'));
       const selectedBounds = selectedItem.getBoundingClientRect();
       const selectedMidX = (selectedBounds.left + selectedBounds.right) / 2;
+      const selectedMidY = (selectedBounds.top + selectedBounds.bottom) / 2;
 
       let closestItem = null;
       let closestDistance = Infinity;
@@ -658,18 +685,24 @@ export default {
         if (item === selectedItem) continue;
         const itemBounds = item.getBoundingClientRect();
         const itemMidX = (itemBounds.left + itemBounds.right) / 2;
+        const itemMidY = (itemBounds.top + itemBounds.bottom) / 2;
         const horizontalOffset = Math.abs(itemMidX - selectedMidX);
+
+        const isTargetRow = direction === 'down'
+          ? (itemMidY > selectedMidY + 10)
+          : (itemMidY < selectedMidY - 10);
+
+        if (!isTargetRow) continue;
 
         const verticalGap = direction === 'down'
           ? itemBounds.top - selectedBounds.bottom
           : selectedBounds.top - itemBounds.bottom;
 
-        if (verticalGap > 0) {
-          const distance = Math.hypot(horizontalOffset, verticalGap);
-          if (distance < closestDistance) {
-            closestDistance = distance;
-            closestItem = item;
-          }
+        const effectiveVerticalGap = Math.max(0, verticalGap);
+        const distance = Math.hypot(horizontalOffset, effectiveVerticalGap);
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          closestItem = item;
         }
       }
       return closestItem;
@@ -691,73 +724,183 @@ export default {
         const targetItem = allItems.at(nextItemIndex);
         mutations.resetSelected();
         mutations.addSelected(targetItem.index);
-        this.scrollSelectedIntoView();
+        mutations.setLastSelectedIndex(targetItem.index);
+        this.leadIndex = targetItem.index;
+        this.scrollItemIntoView(targetItem.index);
         return true;
       }
       return false;
     },
     // Helper method to handle selection based on arrow keys
-    navigateKeyboardArrows(arrowKey) {
-      const isCardView = getters.isCardView(); // gallery, normal, icons
-      const selectedIndex = state.selected.length > 0 ? state.selected[0] : null;
+    navigateKeyboardArrows(arrowKey, event = {}) {
+      if (this.allItems.length === 0) return;
 
-      if (selectedIndex === null) {
-        // If nothing is selected, select the first item
+      const isShift = !!event.shiftKey;
+      const isCtrl = !!(event.ctrlKey || event.metaKey);
+      const isCardView = getters.isCardView(); // gallery, normal, icons
+
+      const currentLead = this.getCurrentLead();
+      if (currentLead === null) {
+        this.selectFirstItem();
+        const firstIdx = this.allItems[0]?.index;
+        this.leadIndex = firstIdx;
+        this.scrollItemIntoView(firstIdx);
+        return;
+      }
+
+      const allItems = this.allItems;
+      const currentPos = allItems.findIndex(item => item.index === currentLead);
+      if (currentPos === -1) {
         this.selectFirstItem();
         return;
       }
 
-      // Left/Right arrows will always use the visual order that we see
-      if (arrowKey === 'ArrowLeft' || arrowKey === 'ArrowRight') {
-        const step = arrowKey === 'ArrowLeft' ? -1 : 1;
-        this.moveSelectionBy(step);
-        return;
+      let targetItem = null;
+
+      // Left/Right arrows or list/compact views navigate linearly through visual order
+      if (arrowKey === 'ArrowLeft' || arrowKey === 'ArrowRight' || !isCardView) {
+        const step = (arrowKey === 'ArrowLeft' || arrowKey === 'ArrowUp') ? -1 : 1;
+        const targetPos = currentPos + step;
+        if (targetPos >= 0 && targetPos < allItems.length) {
+          targetItem = allItems[targetPos];
+        }
+      } else {
+        // Card/gallery/icons views with ArrowUp/ArrowDown
+        const currentItemElem = this.$el?.querySelector?.(`.listing-item[data-index="${currentLead}"]`);
+        if (currentItemElem) {
+          const direction = arrowKey === 'ArrowDown' ? 'down' : 'up';
+          const nextItemElem = this.findClosestItem(currentItemElem, direction);
+          const itemIndex = parseInt(nextItemElem?.dataset.index, 10);
+          if (!Number.isNaN(itemIndex)) {
+            targetItem = allItems.find(item => item.index === itemIndex);
+          }
+        }
+
+        // Fallback if geometric match wasn't found (e.g., edge rows)
+        if (!targetItem) {
+          const cols = this.numColumns || 1;
+          const step = arrowKey === 'ArrowDown' ? cols : -cols;
+          const targetPos = currentPos + step;
+          if (targetPos >= 0 && targetPos < allItems.length) {
+            targetItem = allItems[targetPos];
+          }
+        }
       }
 
-      // On list/compact views we use a simple linear navigation since all the items are aligned
-      if (!isCardView) {
-        const step = arrowKey === 'ArrowUp' ? -1 : 1;
-        this.moveSelectionBy(step);
-        return;
-      }
+      if (!targetItem) return;
 
-      // But for gallery, normal, icons views, we need to find the closest item
-      // because the rows aren't always consistent (some have 1 item, others 5, etc)
-      // which caused "random jumps"
-      const selectedItem = this.$el.querySelector(`.listing-item[data-index="${selectedIndex}"]`);
-      if (!selectedItem) return;
+      if (isShift) {
+        // Shift + Arrow: Expand / contract continuous range selection from anchor to target
+        let anchor = state.lastSelectedIndex;
+        if (anchor === null || !allItems.some(item => item.index === anchor)) {
+          anchor = currentLead;
+          mutations.setLastSelectedIndex(anchor);
+        }
 
-      let nextItem = null;
+        const anchorPos = allItems.findIndex(item => item.index === anchor);
+        const targetPos = allItems.findIndex(item => item.index === targetItem.index);
+        const start = Math.min(anchorPos, targetPos);
+        const end = Math.max(anchorPos, targetPos);
 
-      switch (arrowKey) {
-        case 'ArrowDown':
-          nextItem = this.findClosestItem(selectedItem, 'down');
-          break;
-        case 'ArrowUp':
-          nextItem = this.findClosestItem(selectedItem, 'up');
-          break;
-      }
-
-      const itemIndex = parseInt(nextItem?.dataset.index, 10);
-      if (!Number.isNaN(itemIndex)) {
         mutations.resetSelected();
-        mutations.addSelected(itemIndex);
-        this.scrollSelectedIntoView();
+        for (let i = start; i <= end; i++) {
+          mutations.addSelected(allItems[i].index);
+        }
+        mutations.setMultiple(end > start);
+        this.leadIndex = targetItem.index;
+        this.scrollItemIntoView(targetItem.index);
+      } else if (isCtrl) {
+        // Ctrl + Arrow: Move focus cursor without clearing active selection
+        this.leadIndex = targetItem.index;
+        this.scrollItemIntoView(targetItem.index);
+      } else {
+        // Normal Arrow: Move single selection
+        mutations.resetSelected();
+        mutations.addSelected(targetItem.index);
+        mutations.setLastSelectedIndex(targetItem.index);
+        this.leadIndex = targetItem.index;
+        mutations.setMultiple(false);
+        this.scrollItemIntoView(targetItem.index);
       }
     },
-    scrollSelectedIntoView() {
+    navigateKeyboardHomeEnd(key, event = {}) {
+      if (this.allItems.length === 0) return;
+      const isShift = !!event.shiftKey;
+      const allItems = this.allItems;
+      const targetItem = key === 'Home' ? allItems[0] : allItems[allItems.length - 1];
+      if (!targetItem) return;
+
+      if (isShift) {
+        let anchor = state.lastSelectedIndex;
+        if (anchor === null || !allItems.some(item => item.index === anchor)) {
+          anchor = this.getCurrentLead() ?? targetItem.index;
+          mutations.setLastSelectedIndex(anchor);
+        }
+        const anchorPos = allItems.findIndex(item => item.index === anchor);
+        const targetPos = allItems.findIndex(item => item.index === targetItem.index);
+        const start = Math.min(anchorPos, targetPos);
+        const end = Math.max(anchorPos, targetPos);
+
+        mutations.resetSelected();
+        for (let i = start; i <= end; i++) {
+          mutations.addSelected(allItems[i].index);
+        }
+        mutations.setMultiple(end > start);
+        this.leadIndex = targetItem.index;
+        this.scrollItemIntoView(targetItem.index);
+      } else {
+        mutations.resetSelected();
+        mutations.addSelected(targetItem.index);
+        mutations.setLastSelectedIndex(targetItem.index);
+        this.leadIndex = targetItem.index;
+        mutations.setMultiple(false);
+        this.scrollItemIntoView(targetItem.index);
+      }
+    },
+    toggleKeyboardSelection() {
+      if (this.allItems.length === 0) return;
+      const itemIndex = this.getCurrentLead();
+      if (itemIndex === null) return;
+
+      const isCurrentlySelected = state.selected.some(entry =>
+        typeof entry === 'number' ? entry === itemIndex : entry?.index === itemIndex
+      );
+
+      if (isCurrentlySelected) {
+        mutations.removeSelected(itemIndex);
+        if (state.selected.length <= 1) {
+          mutations.setMultiple(false);
+        }
+      } else {
+        mutations.addSelected(itemIndex);
+        mutations.setLastSelectedIndex(itemIndex);
+        this.leadIndex = itemIndex;
+        if (state.selected.length > 1) {
+          mutations.setMultiple(true);
+        }
+      }
+      this.scrollItemIntoView(itemIndex);
+    },
+    scrollItemIntoView(itemIndex) {
       setTimeout(() => {
-        const element = document.querySelector(
-          '.listing-item[aria-selected="true"]'
-        );
+        const element = this.$el?.querySelector?.(`.listing-item[data-index="${itemIndex}"]`);
         if (element) {
           element.scrollIntoView({
             behavior: "smooth",
             block: "nearest",
             inline: "nearest",
           });
+          if (typeof element.focus === "function") {
+            element.focus({ preventScroll: true });
+          }
         }
       }, 50);
+    },
+    scrollSelectedIntoView() {
+      const idx = this.getCurrentLead();
+      if (idx !== null) {
+        this.scrollItemIntoView(idx);
+      }
     },
     keyEvent(event) {
       const { key, ctrlKey, metaKey, altKey, which } = event;
@@ -767,6 +910,12 @@ export default {
                          key === 'ArrowRight';
       if (state.isSearchActive || getters.currentView() !== "listingView" ||
         getters.currentPromptName() || (event.repeat && (!isArrowKey || altKey))) return;
+
+      const target = event.target;
+      const targetTag = target?.tagName ? target.tagName.toLowerCase() : "";
+      if (targetTag === "input" || targetTag === "textarea" || targetTag === "select" || target?.isContentEditable) {
+        return;
+      }
 
       if (
         (key === ' ' || key === '/') &&
@@ -781,18 +930,9 @@ export default {
       const isAlphanumeric = /^[a-z0-9]$/i.test(key);
       const modifierKeys = ctrlKey || metaKey;
       if (isAlphanumeric && !modifierKeys && state.selected.length <= 1) {
-        const t = event.target;
-        const tag = t?.tagName ? t.tagName.toLowerCase() : "";
-        if (
-          tag !== "input" &&
-          tag !== "textarea" &&
-          tag !== "select" &&
-          !t.isContentEditable
-        ) {
-          event.preventDefault();
-          this.alphanumericKeyPress(key);
-          return;
-        }
+        event.preventDefault();
+        this.alphanumericKeyPress(key);
+        return;
       }
 
       if (modifierKeys) {
@@ -866,7 +1006,19 @@ export default {
         case "ArrowLeft":
         case "ArrowRight":
           event.preventDefault();
-          this.navigateKeyboardArrows(key);
+          this.navigateKeyboardArrows(key, event);
+          break;
+
+        case "Home":
+        case "End":
+          event.preventDefault();
+          this.navigateKeyboardHomeEnd(key, event);
+          break;
+
+        case " ":
+        case "Spacebar":
+          event.preventDefault();
+          this.toggleKeyboardSelection();
           break;
       }
     },
