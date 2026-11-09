@@ -736,7 +736,6 @@ export default {
       if (this.allItems.length === 0) return;
 
       const isShift = !!event.shiftKey;
-      const isCtrl = !!(event.ctrlKey || event.metaKey);
       const isCardView = getters.isCardView(); // gallery, normal, icons
 
       const currentLead = this.getCurrentLead();
@@ -809,10 +808,6 @@ export default {
         mutations.setMultiple(end > start);
         this.leadIndex = targetItem.index;
         this.scrollItemIntoView(targetItem.index);
-      } else if (isCtrl) {
-        // Ctrl + Arrow: Move focus cursor without clearing active selection
-        this.leadIndex = targetItem.index;
-        this.scrollItemIntoView(targetItem.index);
       } else {
         // Normal Arrow: Move single selection
         mutations.resetSelected();
@@ -856,30 +851,6 @@ export default {
         mutations.setMultiple(false);
         this.scrollItemIntoView(targetItem.index);
       }
-    },
-    toggleKeyboardSelection() {
-      if (this.allItems.length === 0) return;
-      const itemIndex = this.getCurrentLead();
-      if (itemIndex === null) return;
-
-      const isCurrentlySelected = state.selected.some(entry =>
-        typeof entry === 'number' ? entry === itemIndex : entry?.index === itemIndex
-      );
-
-      if (isCurrentlySelected) {
-        mutations.removeSelected(itemIndex);
-        if (state.selected.length <= 1) {
-          mutations.setMultiple(false);
-        }
-      } else {
-        mutations.addSelected(itemIndex);
-        mutations.setLastSelectedIndex(itemIndex);
-        this.leadIndex = itemIndex;
-        if (state.selected.length > 1) {
-          mutations.setMultiple(true);
-        }
-      }
-      this.scrollItemIntoView(itemIndex);
     },
     scrollItemIntoView(itemIndex) {
       setTimeout(() => {
@@ -1013,12 +984,6 @@ export default {
         case "End":
           event.preventDefault();
           this.navigateKeyboardHomeEnd(key, event);
-          break;
-
-        case " ":
-        case "Spacebar":
-          event.preventDefault();
-          this.toggleKeyboardSelection();
           break;
       }
     },

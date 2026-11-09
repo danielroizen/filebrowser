@@ -68,7 +68,7 @@ const createMockContext = (items) => {
   };
 };
 
-describe("ListingView keyboard navigation and multi-selection", () => {
+describe("ListingView keyboard navigation and continuous multi-selection", () => {
   const mockItems = [
     { index: 0, name: "folder1", type: "directory" },
     { index: 1, name: "folder2", type: "directory" },
@@ -97,7 +97,6 @@ describe("ListingView keyboard navigation and multi-selection", () => {
 
   it("moves single selection on normal ArrowDown and ArrowUp", () => {
     const ctx = createMockContext(mockItems);
-    // Start with item 0 selected
     store.selected = [0];
     store.lastSelectedIndex = 0;
     ctx.leadIndex = 0;
@@ -108,7 +107,6 @@ describe("ListingView keyboard navigation and multi-selection", () => {
     expect(mutations.setLastSelectedIndex).toHaveBeenCalledWith(1);
     expect(ctx.leadIndex).toBe(1);
 
-    // Now move back up
     ctx.keyEvent({ key: "ArrowUp", preventDefault: vi.fn() });
     expect(mutations.addSelected).toHaveBeenCalledWith(0);
     expect(ctx.leadIndex).toBe(0);
@@ -120,14 +118,14 @@ describe("ListingView keyboard navigation and multi-selection", () => {
     store.lastSelectedIndex = 0; // Anchor
     ctx.leadIndex = 0;
 
-    // Shift + ArrowDown: should select [0, 1]
+    // Shift + ArrowDown: selects [0, 1]
     ctx.keyEvent({ key: "ArrowDown", shiftKey: true, preventDefault: vi.fn() });
     expect(store.selected).toEqual([0, 1]);
-    expect(store.lastSelectedIndex).toBe(0); // Anchor remains 0!
-    expect(ctx.leadIndex).toBe(1); // Lead cursor moved to 1
+    expect(store.lastSelectedIndex).toBe(0); // Anchor stays 0
+    expect(ctx.leadIndex).toBe(1);
     expect(mutations.setMultiple).toHaveBeenCalledWith(true);
 
-    // Another Shift + ArrowDown: should select [0, 1, 2]
+    // Another Shift + ArrowDown: selects [0, 1, 2]
     ctx.keyEvent({ key: "ArrowDown", shiftKey: true, preventDefault: vi.fn() });
     expect(store.selected).toEqual([0, 1, 2]);
     expect(store.lastSelectedIndex).toBe(0);
@@ -140,34 +138,15 @@ describe("ListingView keyboard navigation and multi-selection", () => {
     expect(ctx.leadIndex).toBe(1);
   });
 
-  it("moves cursor without modifying selection on Ctrl + ArrowDown", () => {
+  it("does not hijack Space key, allowing global search shortcut to work", () => {
     const ctx = createMockContext(mockItems);
     store.selected = [0];
-    store.lastSelectedIndex = 0;
-    ctx.leadIndex = 0;
+    const preventDefault = vi.fn();
 
-    ctx.keyEvent({ key: "ArrowDown", ctrlKey: true, preventDefault: vi.fn() });
-    // Selection must remain untouched!
+    ctx.keyEvent({ key: " ", preventDefault });
+    // Space should not be prevented or handled by ListingView
+    expect(preventDefault).not.toHaveBeenCalled();
     expect(store.selected).toEqual([0]);
-    expect(ctx.leadIndex).toBe(1);
-  });
-
-  it("toggles item selection on Space key", () => {
-    const ctx = createMockContext(mockItems);
-    store.selected = [0];
-    store.lastSelectedIndex = 0;
-    ctx.leadIndex = 1; // Cursor is on item 1 (which is unselected)
-
-    // Space on item 1 toggles it ON
-    ctx.keyEvent({ key: " ", preventDefault: vi.fn() });
-    expect(store.selected).toEqual([0, 1]);
-    expect(mutations.setMultiple).toHaveBeenCalledWith(true);
-    expect(ctx.leadIndex).toBe(1);
-
-    // Space on item 1 again toggles it OFF
-    ctx.keyEvent({ key: " ", preventDefault: vi.fn() });
-    expect(store.selected).toEqual([0]);
-    expect(mutations.setMultiple).toHaveBeenCalledWith(false);
   });
 
   it("navigates with Home and End keys, including Shift + End", () => {
